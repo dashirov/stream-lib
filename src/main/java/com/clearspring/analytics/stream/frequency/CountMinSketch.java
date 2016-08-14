@@ -19,20 +19,23 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.Serializable;
 
 import java.util.Arrays;
 import java.util.Random;
 
 import com.clearspring.analytics.stream.membership.Filter;
+import com.clearspring.analytics.util.Preconditions;
 
 /**
  * Count-Min Sketch datastructure.
  * An Improved Data Stream Summary: The Count-Min Sketch and its Applications
- * http://www.eecs.harvard.edu/~michaelm/CS222/countmin.pdf
+ * https://web.archive.org/web/20060907232042/http://www.eecs.harvard.edu/~michaelm/CS222/countmin.pdf
  */
-public class CountMinSketch implements IFrequency {
+public class CountMinSketch implements IFrequency, Serializable {
 
     public static final long PRIME_MODULUS = (1L << 31) - 1;
+    private static final long serialVersionUID = -5084982213094657923L;
 
     int depth;
     int width;
@@ -63,14 +66,78 @@ public class CountMinSketch implements IFrequency {
         initTablesWith(depth, width, seed);
     }
 
-    CountMinSketch(int depth, int width, int size, long[] hashA, long[][] table) {
+    CountMinSketch(int depth, int width, long size, long[] hashA, long[][] table) {
         this.depth = depth;
         this.width = width;
         this.eps = 2.0 / width;
         this.confidence = 1 - 1 / Math.pow(2, depth);
         this.hashA = hashA;
         this.table = table;
+
+        Preconditions.checkState(size >= 0, "The size cannot be smaller than ZER0: " + size);
         this.size = size;
+    }
+
+    @Override
+    public String toString() {
+        return "CountMinSketch{" +
+                "eps=" + eps +
+                ", confidence=" + confidence +
+                ", depth=" + depth +
+                ", width=" + width +
+                ", size=" + size +
+                '}';
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+
+        final CountMinSketch that = (CountMinSketch) o;
+
+        if (depth != that.depth) {
+            return false;
+        }
+        if (width != that.width) {
+            return false;
+        }
+
+        if (Double.compare(that.eps, eps) != 0) {
+            return false;
+        }
+        if (Double.compare(that.confidence, confidence) != 0) {
+            return false;
+        }
+
+        if (size != that.size) {
+            return false;
+        }
+
+        if (!Arrays.deepEquals(table, that.table)) {
+            return false;
+        }
+        return Arrays.equals(hashA, that.hashA);
+    }
+
+    @Override
+    public int hashCode() {
+        int result;
+        long temp;
+        result = depth;
+        result = 31 * result + width;
+        result = 31 * result + Arrays.deepHashCode(table);
+        result = 31 * result + Arrays.hashCode(hashA);
+        result = 31 * result + (int) (size ^ (size >>> 32));
+        temp = Double.doubleToLongBits(eps);
+        result = 31 * result + (int) (temp ^ (temp >>> 32));
+        temp = Double.doubleToLongBits(confidence);
+        result = 31 * result + (int) (temp ^ (temp >>> 32));
+        return result;
     }
 
     private void initTablesWith(int depth, int width, int seed) {
@@ -107,6 +174,21 @@ public class CountMinSketch implements IFrequency {
         return ((int) hash) % width;
     }
 
+    private static void checkSizeAfterOperation(long previousSize, String operation, long newSize) {
+        if (newSize < previousSize) {
+            throw new IllegalStateException("Overflow error: the size after calling `" + operation +
+                    "` is smaller than the previous size. " +
+                    "Previous size: " + previousSize +
+                    ", New size: " + newSize);
+        }
+    }
+
+    private void checkSizeAfterAdd(String item, long count) {
+        long previousSize = size;
+        size += count;
+        checkSizeAfterOperation(previousSize, "add(" + item + "," + count + ")", size);
+    }
+
     @Override
     public void add(long item, long count) {
         if (count < 0) {
@@ -119,7 +201,8 @@ public class CountMinSketch implements IFrequency {
         for (int i = 0; i < depth; ++i) {
             table[i][hash(item, i)] += count;
         }
-        size += count;
+
+        checkSizeAfterAdd(String.valueOf(item), count);
     }
 
     @Override
@@ -135,7 +218,8 @@ public class CountMinSketch implements IFrequency {
         for (int i = 0; i < depth; ++i) {
             table[i][buckets[i]] += count;
         }
-        size += count;
+
+        checkSizeAfterAdd(item, count);
     }
 
     @Override
@@ -181,7 +265,7 @@ public class CountMinSketch implements IFrequency {
             long[] hashA = Arrays.copyOf(estimators[0].hashA, estimators[0].hashA.length);
 
             long[][] table = new long[depth][width];
-            int size = 0;
+            long size = 0;
 
             for (CountMinSketch estimator : estimators) {
                 if (estimator.depth != depth) {
@@ -199,7 +283,10 @@ public class CountMinSketch implements IFrequency {
                         table[i][j] += estimator.table[i][j];
                     }
                 }
+
+                long previousSize = size;
                 size += estimator.size;
+                checkSizeAfterOperation(previousSize, "merge(" + estimator + ")", size);
             }
 
             merged = new CountMinSketch(depth, width, size, hashA, table);
